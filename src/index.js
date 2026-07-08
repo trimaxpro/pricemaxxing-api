@@ -88,19 +88,19 @@ async function fetchMyntraApi(productId, cookie) {
       if (!res.ok) continue;
 
       const raw = await res.json();
-      const product = raw.product || raw.data || raw;
-      if (!product) continue;
+      const p = raw.product || raw.data || raw.style || raw;
+      if (!p) continue;
 
-      const sizeData = product.sizes?.[0]?.sizeSellerData?.[0];
-      const priceData = product.price || {};
-      const name = product.name || product.title || '';
-      const brand = product.brand?.name || product.brandName || '';
-      const title = brand ? `${brand} ${name}` : name;
-      const currentPrice = sizeData?.discountedPrice || priceData.amount || product.sellingPrice || product.price?.sellingPrice || priceData.mrp || null;
-      const originalPrice = priceData.mrp || product.mrp || sizeData?.mrp || null;
-      const discount = priceData.discountPercent || product.discountPercent || sizeData?.discountPercent || null;
-      const imageUrl = product.searchImage || product.image || product.imageUrl || product.media?.albums?.[0]?.images?.[0]?.src || product.media?.[0]?.src || null;
-      const availability = !product.flags?.outOfStock && (product.sizes?.some?.(s => s.available) ?? true);
+      const s = p.sizes?.[0]?.sizeSellerData?.[0];
+      const priceData = p.price || {};
+      const name = p.name || p.title || '';
+      const brand = p.brand?.name || p.brandName || '';
+      const title = name.includes(brand) ? name : (brand ? `${brand} ${name}` : name);
+      const imageUrl = p.searchImage || p.image || p.imageUrl || p.media?.albums?.[0]?.images?.[0]?.src || p.media?.[0]?.src || null;
+      const currentPrice = s?.discountedPrice || priceData.amount || p.sellingPrice || priceData.sellingPrice || priceData.mrp || null;
+      const originalPrice = priceData.mrp || p.mrp || s?.mrp || null;
+      const discount = priceData.discountPercent || p.discountPercent || s?.discountPercent || null;
+      const availability = !p.flags?.outOfStock && (p.sizes?.some?.(sz => sz.available) ?? true);
 
       if (title && currentPrice > 0) {
         return {
@@ -143,18 +143,18 @@ async function scrapeMyntraViaPuppeteer(url) {
 
     if (apiResults.length > 0) {
       const product = apiResults[0];
-      const p = product.product || product.data || product;
+      const p = product.product || product.data || product.style || product;
       if (p?.name || p?.title) {
-        const sizeData = p.sizes?.[0]?.sizeSellerData?.[0];
+        const s = p.sizes?.[0]?.sizeSellerData?.[0];
         const priceData = p.price || {};
         const name = p.name || p.title || '';
         const brand = p.brand?.name || p.brandName || '';
-        const title = brand ? `${brand} ${name}` : name;
-        const currentPrice = sizeData?.discountedPrice || priceData.amount || p.sellingPrice || null;
-        const originalPrice = priceData.mrp || p.mrp || sizeData?.mrp || null;
+        const title = name.includes(brand) ? name : (brand ? `${brand} ${name}` : name);
+        const currentPrice = s?.discountedPrice || priceData.amount || p.sellingPrice || null;
+        const originalPrice = priceData.mrp || p.mrp || s?.mrp || null;
         const discount = priceData.discountPercent || p.discountPercent || null;
         const imageUrl = p.searchImage || p.image || p.media?.albums?.[0]?.images?.[0]?.src || null;
-        const availability = !p.flags?.outOfStock && (p.sizes?.some?.(s => s.available) ?? true);
+        const availability = !p.flags?.outOfStock && (p.sizes?.some?.(sz => sz.available) ?? true);
 
         if (title && currentPrice > 0) {
           return {
