@@ -23,54 +23,79 @@ async function getBrowser() {
   return browser;
 }
 
-async function fetchMyntraApi(productId) {
+function extractProductId(url) {
   try {
-    const apiUrl = `https://www.myntra.com/gateway/v2/product/${productId}`;
-    const res = await fetch(apiUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/plain, */*',
-        'Referer': 'https://www.myntra.com/',
-      },
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    if (!data?.style?.id) return null;
-
-    const style = data.style;
-    const priceInfo = style.price || {};
-    const mrp = priceInfo.mrp;
-    const sellingPrice = priceInfo.sellingPrice || priceInfo.discountedPrice;
-    const discount = priceInfo.discountLabel?.match(/(\d+)/)?.[0]
-      ? parseInt(priceInfo.discountLabel.match(/(\d+)/)[0])
-      : (mrp && sellingPrice ? Math.round((1 - sellingPrice / mrp) * 100) : null);
-    const media = style.media || [];
-
-    return {
-      title: style.name || style.productName || 'Product',
-      currentPrice: sellingPrice || mrp,
-      originalPrice: mrp > sellingPrice ? mrp : null,
-      currency: '₹',
-      imageUrl: media[0]?.src || media[0]?.url || null,
-      availability: style.available || true,
-      discountPercent: discount,
-    };
-  } catch (e) {
-    console.error('Myntra API error:', e.message);
+    const pathname = new URL(url).pathname;
+    const parts = pathname.split('/').filter(Boolean);
+    const pidIdx = parts.findIndex(p => p === 'pid');
+    if (pidIdx !== -1 && parts[pidIdx + 1]) return parts[pidIdx + 1];
+    for (const part of parts.toReversed()) {
+      if (/^\d+$/.test(part)) return part;
+    }
     return null;
+  } catch { return null; }
+}
+
+async function fetchMyntraApi(productId) {
+  const apiUrls = [
+    `https://www.myntra.com/gateway/v2/product/${productId}`,
+    `https://www.myntra.com/gateway/v1/product/${productId}`,
+    `https://www.myntra.com/api/product/${productId}`,
+  ];
+
+  for (const apiUrl of apiUrls) {
+    try {
+      const res = await fetch(apiUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+          'Accept': 'application/json',
+          'Accept-Language': 'en-IN,en-GB;q=0.9,en;q=0.8,hi;q=0.7',
+          'Referer': 'https://www.myntra.com/',
+          'Origin': 'https://www.myntra.com',
+        },
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!res.ok) continue;
+
+      const raw = await res.json();
+      const product = raw.product || raw.data || raw;
+      if (!product) continue;
+
+      const name = product.name || product.title || '';
+      const brand = product.brand?.name || product.brandName || '';
+      const title = brand ? `${brand} ${name}` : name;
+      const currentPrice = product.price?.amount || product.sellingPrice || product.price || product.price?.sellingPrice || null;
+      const originalPrice = product.price?.mrp || product.mrp || null;
+      const discount = product.price?.discountPercent || product.discountPercent || null;
+      const imageUrl = product.searchImage || product.image || product.imageUrl || product.media?.[0]?.src || null;
+      const availability = product.inventoryInfo?.some(i => i.available) ?? true;
+
+      if (title && currentPrice > 0) {
+        return {
+          title, currentPrice,
+          originalPrice: originalPrice > currentPrice ? originalPrice : null,
+          currency: '₹', imageUrl, availability,
+          discountPercent: discount || (originalPrice > currentPrice ? Math.round((1 - currentPrice / originalPrice) * 100) : null),
+        };
+      }
+    } catch (e) {
+      console.error(`Myntra API error (${apiUrl}):`, e.message);
+    }
   }
+  return null;
 }
 
 function isBlockedPage(text) {
   const lower = (text || '').toLowerCase();
-  const patterns = [
-    'captcha', 'cf-captcha', 'challenge-platform', 'just a moment',
-    'enable javascript', 'please turn javascript', 'checking your browser',
-    'access denied', 'sorry, you have been blocked', 'robot check',
-    'request blocked', 'too many requests', 'rate limit exceeded', '429',
-    'something went wrong', 'e002', 'e001',
+  // Only flag if we're clearly blocked — false positives break everything
+  const hardBlocks = [
+    'cf-captcha', 'challenge-platform', 'just a moment',
+    'checking your browser', 'please turn javascript',
   ];
-  return patterns.some(p => lower.includes(p)) || lower.length < 500;
+  if (hardBlocks.some(p => lower.includes(p))) return true;
+  // Empty pages are also blocked
+  if (lower.length < 500) return true;
+  return false;
 }
 
 function parsePrice(text) {
@@ -169,14 +194,16 @@ app.post('/scrape', async (req, res) => {
 
   // For Myntra, try the internal API first (faster, no Puppeteer)
   if (store === 'myntra' || url.includes('myntra.com')) {
-    const productIdMatch = url.match(/myntra\.com\/(?:[^/]+\/)?(?:p\/)?([a-zA-Z0-9]+)/);
-    if (productIdMatch?.[1]) {
-      const apiResult = await fetchMyntraApi(productIdMatch[1]);
+    const productId = extractProductId(url);
+    if (productId) {
+      const apiResult = await fetchMyntraApi(productId);
       if (apiResult) {
-        console.log(`Myntra API success for ${productIdMatch[1]}`);
+        console.log(`Myntra API success for ${productId}`);
         return res.json({ success: true, data: apiResult });
       }
-      console.log(`Myntra API failed for ${productIdMatch[1]}, falling back to Puppeteer`);
+      console.log(`Myntra API failed for ${productId}, falling back to Puppeteer`);
+    } else {
+      console.log(`Could not extract product ID from Myntra URL, falling back to Puppeteer`);
     }
   }
 
