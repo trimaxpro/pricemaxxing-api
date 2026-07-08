@@ -51,8 +51,8 @@ def extract_flipkart_ppd(html: str) -> dict | None:
 
 
 def extract_flipkart_image(html: str) -> str | None:
-    # Try imageURL from script data (unicode escaped)
-    match = re.search(r'"imageURL"\s*:\s*"([^"]+)"', html)
+    # Try imageURL from script data (unicode escaped with \u002f)
+    match = re.search(r'"imageURL"\s*:\s*"((?:[^"\\]|\\.)*)"', html)
     if match:
         url = match.group(1).replace("\\u002f", "/")
         # Replace placeholders with actual values
@@ -61,9 +61,16 @@ def extract_flipkart_image(html: str) -> str | None:
             return url
 
     # Try og:image meta tag
-    match = re.search(r'<meta\s+property="og:image"\s+content="([^"]+)"', html, re.I)
+    match = re.search(r'property="og:image"\s+content="([^"]+)"', html, re.I)
     if match:
         return match.group(1)
+
+    # Try any rukmini URL
+    match = re.search(r'(https?:\\u002f\\u002frukmini[^\s"<>]+)', html)
+    if match:
+        url = match.group(1).replace("\\u002f", "/")
+        url = url.replace("{@width}", "312").replace("{@height}", "416").replace("{@quality}", "80")
+        return url
 
     return None
 
