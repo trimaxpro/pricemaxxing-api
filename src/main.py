@@ -55,21 +55,21 @@ def extract_flipkart_image(html: str) -> str | None:
     match = re.search(r'"imageURL"\s*:\s*"((?:[^"\\]|\\.)*)"', html)
     if match:
         url = match.group(1).replace("\\u002f", "/")
-        # Replace placeholders with actual values
-        url = url.replace("{@width}", "312").replace("{@height}", "416").replace("{@quality}", "80")
+        # Replace placeholders: {@width} {@height} {@quality}
+        url = url.replace("{@width}", "1920").replace("{@height}", "1920").replace("{@quality}", "90")
         if "rukmini" in url or "flixcart" in url:
             return url
 
     # Try og:image meta tag
-    match = re.search(r'property="og:image"\s+content="([^"]+)"', html, re.I)
+    match = re.search(r'content="(https?://[^"]*rukmini[^"]*)"', html, re.I)
     if match:
         return match.group(1)
 
-    # Try any rukmini URL
+    # Try any rukmini URL in HTML
     match = re.search(r'(https?:\\u002f\\u002frukmini[^\s"<>]+)', html)
     if match:
         url = match.group(1).replace("\\u002f", "/")
-        url = url.replace("{@width}", "312").replace("{@height}", "416").replace("{@quality}", "80")
+        url = url.replace("{@width}", "1920").replace("{@height}", "1920").replace("{@quality}", "90")
         return url
 
     return None
@@ -225,13 +225,15 @@ def scrape_myntra(url: str) -> dict | None:
                         if images:
                             image_url = images[0].get("secureSrc") or images[0].get("src")
 
-                # Fix image URL placeholders
+                # Fix image URL placeholders - format: h_720,q_90,w_540
                 if image_url:
-                    image_url = re.sub(r'\(\$height\)', '480', image_url)
-                    image_url = re.sub(r'\(\$width\)', '360', image_url)
-                    image_url = re.sub(r'\(\$qualityPercentage\)', '80', image_url)
-                    image_url = re.sub(r'\([^)]*\)', '80', image_url)
-                    image_url = image_url.replace(",,", ",")
+                    image_url = image_url.replace("($height)", "720")
+                    image_url = image_url.replace("($width)", "540")
+                    image_url = image_url.replace("($qualityPercentage)", "90")
+                    image_url = image_url.replace("($quality)", "90")
+                    image_url = re.sub(r'h_\(\$height\)', 'h_720', image_url)
+                    image_url = re.sub(r'w_\(\$width\)', 'w_540', image_url)
+                    image_url = re.sub(r'q_\(\$qualityPercentage\)', 'q_90', image_url)
 
                 availability = not pdp.get("flags", {}).get("outOfStock", False)
 
