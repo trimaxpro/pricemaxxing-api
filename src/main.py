@@ -73,12 +73,19 @@ def scrape_flipkart(url: str) -> dict | None:
             if price and price > 0:
                 title_match = re.search(r'<title>([^<]+)</title>', html, re.I)
                 title = title_match.group(1).split(" - ")[0].strip() if title_match else "Product"
+                # Extract image from ppd
+                image_url = None
+                image_data = ppd.get("imageData") or ppd.get("image") or {}
+                if isinstance(image_data, dict):
+                    image_url = image_data.get("url") or image_data.get("src")
+                if not image_url:
+                    image_url = ppd.get("thumbnailUrl") or ppd.get("imageUrl")
                 return {
                     "title": title,
                     "currentPrice": price,
                     "originalPrice": mrp if mrp and mrp > price else None,
                     "currency": "₹",
-                    "imageUrl": None,
+                    "imageUrl": image_url,
                     "availability": True,
                     "discountPercent": round((1 - price / mrp) * 100) if mrp and mrp > price else None,
                 }
@@ -94,17 +101,31 @@ def scrape_flipkart(url: str) -> dict | None:
                         offers = offers[0]
                     price = float(offers.get("price", 0))
                     if price > 0:
+                        # Extract image from JSON-LD
+                        image_url = data.get("image")
+                        if isinstance(image_url, list):
+                            image_url = image_url[0] if image_url else None
                         return {
                             "title": data.get("name", "Product"),
                             "currentPrice": price,
                             "originalPrice": float(offers.get("highPrice", 0)) if float(offers.get("highPrice", 0)) > price else None,
                             "currency": "₹",
-                            "imageUrl": None,
+                            "imageUrl": image_url,
                             "availability": True,
                             "discountPercent": None,
                         }
             except Exception:
                 continue
+
+        # Extract image from HTML meta tags or img elements
+        image_url = None
+        og_image = soup.find("meta", property="og:image")
+        if og_image:
+            image_url = og_image.get("content")
+        if not image_url:
+            img_tag = soup.find("img", {"src": re.compile(r'rukmini|flipkart')})
+            if img_tag:
+                image_url = img_tag.get("src")
 
         # Try regex fallback
         pm = re.search(r'(?:₹|Rs\.?|INR)\s*([\d,]+(?:\.\d{1,2})?)', html, re.I)
@@ -118,7 +139,7 @@ def scrape_flipkart(url: str) -> dict | None:
                     "currentPrice": p,
                     "originalPrice": None,
                     "currency": "₹",
-                    "imageUrl": None,
+                    "imageUrl": image_url,
                     "availability": True,
                     "discountPercent": None,
                 }
