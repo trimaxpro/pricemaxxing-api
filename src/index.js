@@ -18,6 +18,7 @@ async function getBrowser() {
         '--no-zygote',
         '--single-process',
         '--disable-blink-features=AutomationControlled',
+        '--disable-http2',
       ],
     });
   }
@@ -53,14 +54,15 @@ function extractProductId(url) {
   } catch { return null; }
 }
 
-async function seedMyntraCookies() {
+async function seedMyntraCookies(page) {
   try {
-    const res = await fetch('https://www.myntra.com/', {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36' },
-    });
-    const cookies = res.headers.getSetCookie?.() || [];
-    return cookies.map(c => c.split(';')[0]).join('; ');
-  } catch { return ''; }
+    await page.goto('https://www.myntra.com/', { waitUntil: 'domcontentloaded', timeout: 15000 });
+    const cookies = await page.cookies();
+    return cookies.map(c => `${c.name}=${c.value}`).join('; ');
+  } catch (e) {
+    console.error('Myntra cookie seed error:', e.message);
+    return '';
+  }
 }
 
 async function fetchMyntraApi(productId, cookie) {
@@ -72,16 +74,17 @@ async function fetchMyntraApi(productId, cookie) {
 
   for (const apiUrl of apiUrls) {
     try {
-      const headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-        'Accept': 'application/json',
-        'Accept-Language': 'en-IN,en-GB;q=0.9,en;q=0.8,hi;q=0.7',
-        'Referer': `https://www.myntra.com/gateway/v2/product/${productId}`,
-        'Origin': 'https://www.myntra.com',
-      };
-      if (cookie) headers['Cookie'] = cookie;
-
-      const res = await fetch(apiUrl, { headers, signal: AbortSignal.timeout(15000) });
+      const res = await fetch(apiUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+          'Accept': 'application/json',
+          'Accept-Language': 'en-IN,en-GB;q=0.9,en;q=0.8,hi;q=0.7',
+          'Referer': 'https://www.myntra.com/',
+          'Origin': 'https://www.myntra.com',
+          'Cookie': cookie,
+        },
+        signal: AbortSignal.timeout(15000),
+      });
       if (!res.ok) continue;
 
       const raw = await res.json();
@@ -219,11 +222,20 @@ async function scrapeMyntra(url) {
   const productId = extractProductId(url);
   if (!productId) return null;
 
-  const cookie = await seedMyntraCookies();
-  const apiResult = await fetchMyntraApi(productId, cookie);
-  if (apiResult) return apiResult;
+  let page;
+  try {
+    const browserInstance = await getBrowser();
+    page = await browserInstance.newPage();
+    await setupPage(page);
 
-  return scrapeMyntraViaPuppeteer(url);
+    const cookie = await seedMyntraCookies(page);
+    const apiResult = await fetchMyntraApi(productId, cookie);
+    if (apiResult) return apiResult;
+
+    return await scrapeMyntraViaPuppeteer(url);
+  } finally {
+    if (page) await page.close().catch(() => {});
+  }
 }
 
 // --- Flipkart ---
@@ -298,13 +310,19 @@ async function scrapeFlipkartViaPuppeteer(url) {
 
       if (!d.currentPrice) {
         const allText = document.body?.innerText || '';
-        const matches = [...allText.matchAll(/₹\s*([\d,]+(?:\.\d{1,2})?)/g)];
-        if (matches.length > 0) {
-          const prices = matches.map(m => parseFloat(m[1].replace(/,/g, ''))).filter(p => p > 10 && p < 10000000);
-          if (prices.length > 0) {
-            prices.sort((a, b) => a - b);
-            d.currentPrice = prices[0];
-            if (prices.length > 1) d.originalPrice = prices[prices.length - 1];
+        const lines = allText.split('\n').filter(l => l.includes('₹'));
+        const prices = lines.map(l => {
+          const m = l.match(/₹\s*([\d,]+(?:\.\d{1,2})?)/);
+          return m ? parseFloat(m[1].replace(/,/g, '')) : null;
+        }).filter(p => p !== null && p > 20 && p < 10000000);
+
+        if (prices.length > 0) {
+          prices.sort((a, b) => a - b);
+          const mid = Math.floor(prices.length / 2);
+          d.currentPrice = prices.length === 1 ? prices[0] : prices[mid];
+          const uniq = [...new Set(prices)].sort((a, b) => a - b);
+          if (uniq.length > 1) {
+            d.originalPrice = uniq[uniq.length - 1];
           }
         }
       }
@@ -383,12 +401,10 @@ app.post('/scrape', async (req, res) => {
 
   console.log(`Scraping ${store || 'unknown'}: ${url}`);
 
-  const isMyntra = store === 'myntra' || url.includes('myntra.com');
-
   try {
     let result = null;
 
-    if (isMyntra) {
+    if (store === 'myntra' || url.includes('myntra.com')) {
       result = await scrapeMyntra(url);
     } else {
       result = await scrapeFlipkartViaPuppeteer(url);
