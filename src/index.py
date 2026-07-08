@@ -36,10 +36,13 @@ def scrape_myntra(url):
         'Accept-Language': 'en-IN,en;q=0.9,hi;q=0.8',
         'Referer': 'https://www.myntra.com/',
     })
-    s.get('https://www.myntra.com/', timeout=15)
-    time.sleep(random.uniform(1.0, 2.5))
+    try:
+        s.get('https://www.myntra.com/', timeout=10)
+        time.sleep(random.uniform(0.5, 1.5))
+    except:
+        pass
 
-    r = s.get(url, timeout=20)
+    r = s.get(url, timeout=30)
     if r.status_code != 200:
         return None
 
