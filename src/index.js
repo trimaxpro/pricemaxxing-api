@@ -1,5 +1,8 @@
 import express from 'express';
-import puppeteer from 'puppeteer';
+import puppeteerExtra from 'puppeteer-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+
+puppeteerExtra.use(StealthPlugin());
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -17,7 +20,7 @@ let browser;
 
 async function getBrowser() {
   if (!browser || !browser.isConnected()) {
-    browser = await puppeteer.launch({
+    browser = await puppeteerExtra.launch({
       headless: 'new',
       args: [
         '--no-sandbox',
