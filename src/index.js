@@ -37,7 +37,7 @@ async function setupPage(page) {
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
 function extractMyxData(html) {
-  const match = html.match(/window\.__myx\s*=\s*(\{.+?\});/s);
+  const match = html.match(/window\.__myx\s*=\s*(\{.+?\})(?:\s*;)?\s*<\//s);
   if (!match) return null;
   try {
     const data = JSON.parse(match[1]);
@@ -230,8 +230,9 @@ app.post('/debug', async (req, res) => {
     const r = await fetch(url, { headers: { 'User-Agent': UA, 'Accept': 'text/html', ...(c ? { 'Cookie': c } : {}) }, signal: AbortSignal.timeout(25000) });
     const html = await r.text();
     const hasMyx = html.includes('window.__myx');
-    const match = html.match(/window\.__myx\s*=\s*(\{.+?\});/s);
-    const pdpData = match ? (JSON.parse(match[1])?.pdpData || {}) : null;
+    const match = html.match(/window\.__myx\s*=\s*(\{.+?\})(?:\s*;)?\s*<\//s);
+    let pdpData = null;
+    try { pdpData = match ? (JSON.parse(match[1])?.pdpData || {}) : null; } catch {}
     return res.json({ success: true, status: r.status, htmlLen: html.length, hasWindowMyx: hasMyx, pdpKeys: pdpData ? Object.keys(pdpData).slice(0, 15) : null, snippet: html.substring(0, 1500) });
   }
 
