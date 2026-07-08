@@ -11,287 +11,121 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 HEADERS = {
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "User-Agent": UA,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "en-IN,en-US;q=0.9,en;q=0.8,hi;q=0.7",
     "Accept-Encoding": "gzip, deflate, br",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-    "Upgrade-Insecure-Requests": "1",
 }
 
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-]
+
+def fetch_html(url: str, extra_headers: dict = None) -> str | None:
+    headers = {**HEADERS, **(extra_headers or {})}
+    try:
+        resp = cffi_requests.get(url, headers=headers, impersonate="chrome131", timeout=30)
+        if resp.status_code == 200 and len(resp.text) > 500:
+            return resp.text
+    except Exception as e:
+        logger.error(f"Fetch error for {url}: {e}")
+    return None
 
 
-def extract_flipkart_ppd(html: str) -> dict | None:
-    match = re.search(r'"ppd"\s*:\s*(\{)', html)
+def extract_flipkart(html: str) -> dict | None:
+    # Extract ppd data for price
+    ppd = None
+    match = re.search(r'"ppd"\s*:\s*\{', html)
+    if match:
+        start = match.start() + match[0].__len__() - 1
+        depth, i = 1, start
+        while i < len(html) - 1 and depth > 0:
+            i += 1
+            if html[i] == '{': depth += 1
+            if html[i] == '}': depth -= 1
+        if depth == 0:
+            try:
+                ppd = json.loads(html[start:i + 1])
+            except Exception:
+                pass
+
+    price = ppd.get("finalPrice") or ppd.get("fsp") if ppd else None
+    mrp = ppd.get("mrp") if ppd else None
+
+    if not price:
+        pm = re.search(r'"finalPrice"\s*:\s*(\d+)', html)
+        if pm: price = int(pm.group(1))
+    if not mrp:
+        pm = re.search(r'"mrp"\s*:\s*(\d+)', html)
+        if pm: mrp = int(pm.group(1))
+
+    if not price or price <= 0:
+        return None
+
+    # Extract title
+    tm = re.search(r'<title>([^<]+)</title>', html, re.I)
+    title = tm.group(1).split(" - ")[0].strip() if tm else "Product"
+
+    # Extract image - search for rukminim2 flixcart URL
+    image_url = None
+    img_match = re.search(r'(https?://rukminim[12]\.flixcart\.com/image/\d+/\d+/[^"<>\s]+)', html)
+    if img_match:
+        image_url = img_match.group(1)
+        if "?" not in image_url:
+            image_url += "?q=90"
+
+    return {
+        "title": title,
+        "currentPrice": price,
+        "originalPrice": mrp if mrp and mrp > price else None,
+        "currency": "₹",
+        "imageUrl": image_url,
+        "availability": True,
+        "discountPercent": round((1 - price / mrp) * 100) if mrp and mrp > price else None,
+    }
+
+
+def extract_myntra(html: str) -> dict | None:
+    match = re.search(r'window\.__myx\s*=\s*(\{.+?\})\s*;?\s*</', html, re.S)
     if not match:
         return None
-    start = match.start() + match[0].length - 1 if hasattr(match[0], 'length') else match.start() + len(match[0]) - 1
-    depth = 1
-    i = start
-    while i < len(html) - 1 and depth > 0:
-        i += 1
-        if html[i] == '{':
-            depth += 1
-        if html[i] == '}':
-            depth -= 1
-    if depth != 0:
-        return None
-    try:
-        return json.loads(html[start:i + 1])
-    except Exception:
-        return None
-
-
-def extract_flipkart_image(html: str) -> str | None:
-    # Try imageURL from script data (unicode escaped with \u002f)
-    match = re.search(r'"imageURL"\s*:\s*"((?:[^"\\]|\\.)*)"', html)
-    if match:
-        url = match.group(1).replace("\\u002f", "/")
-        # Replace placeholders: {@width} {@height} {@quality}
-        url = url.replace("{@width}", "1920").replace("{@height}", "1920").replace("{@quality}", "90")
-        if "rukmini" in url or "flixcart" in url:
-            logger.info(f"Flipkart image from imageURL: {url[:80]}")
-            return url
-
-    # Try rukmini URL directly in HTML (not unicode escaped)
-    match = re.search(r'(https?://rukminim[12]\.flixcart\.com/image/[^"<>\s]+)', html)
-    if match:
-        url = match.group(1)
-        if "?" not in url:
-            url += "?q=90"
-        logger.info(f"Flipkart image from rukmini: {url[:80]}")
-        return url
-
-    logger.warning("No Flipkart image found")
-    return None
-
-
-def scrape_flipkart(url: str) -> dict | None:
-    ua = USER_AGENTS[0]
-    headers = {**HEADERS, "User-Agent": ua, "Referer": "https://www.flipkart.com/"}
 
     try:
-        resp = cffi_requests.get(url, headers=headers, impersonate="chrome131", timeout=30)
-        if resp.status_code != 200:
-            logger.error(f"Flipkart HTTP {resp.status_code}")
-            return None
+        data = json.loads(match.group(1))
+        pdp = data.get("pdpData", {})
+        price_data = pdp.get("price", {})
+        brand = pdp.get("brand", {}).get("name", "")
+        name = pdp.get("name", "")
+        title = f"{brand} {name}".strip() if brand else name
+        current_price = price_data.get("discounted") or price_data.get("sellingPrice") or price_data.get("amount")
+        original_price = price_data.get("mrp") or price_data.get("originalPrice")
+        discount = price_data.get("discountPercent")
 
-        html = resp.text
-        if len(html) < 1000:
-            logger.error(f"Flipkart returned short response ({len(html)} bytes)")
-            return None
+        # Extract image
+        image_url = pdp.get("searchImage") or pdp.get("image")
+        if not image_url:
+            media = pdp.get("media", {})
+            albums = media.get("albums", [])
+            if albums and albums[0].get("images"):
+                image_url = albums[0]["images"][0].get("secureSrc") or albums[0]["images"][0].get("src")
 
-        # Try ppd data
-        ppd = extract_flipkart_ppd(html)
-        image_url = extract_flipkart_image(html)
-        if ppd:
-            price = ppd.get("finalPrice") or ppd.get("fsp") or ppd.get("fkfp")
-            mrp = ppd.get("mrp")
-            if price and price > 0:
-                title_match = re.search(r'<title>([^<]+)</title>', html, re.I)
-                title = title_match.group(1).split(" - ")[0].strip() if title_match else "Product"
-                return {
-                    "title": title,
-                    "currentPrice": price,
-                    "originalPrice": mrp if mrp and mrp > price else None,
-                    "currency": "₹",
-                    "imageUrl": image_url,
-                    "availability": True,
-                    "discountPercent": round((1 - price / mrp) * 100) if mrp and mrp > price else None,
-                }
+        if image_url:
+            image_url = image_url.replace("($height)", "720").replace("($width)", "540")
+            image_url = image_url.replace("($qualityPercentage)", "90").replace("($quality)", "90")
 
-        # Try JSON-LD
-        soup = BeautifulSoup(html, "lxml")
-        for script in soup.find_all("script", type="application/ld+json"):
-            try:
-                data = json.loads(script.string)
-                offers = data.get("offers")
-                if offers:
-                    if isinstance(offers, list):
-                        offers = offers[0]
-                    price = float(offers.get("price", 0))
-                    if price > 0:
-                        # Use image from earlier extraction
-                        ld_image = data.get("image")
-                        if isinstance(ld_image, list):
-                            ld_image = ld_image[0] if ld_image else None
-                        return {
-                            "title": data.get("name", "Product"),
-                            "currentPrice": price,
-                            "originalPrice": float(offers.get("highPrice", 0)) if float(offers.get("highPrice", 0)) > price else None,
-                            "currency": "₹",
-                            "imageUrl": image_url or ld_image,
-                            "availability": True,
-                            "discountPercent": None,
-                        }
-            except Exception:
-                continue
+        availability = not pdp.get("flags", {}).get("outOfStock", False)
 
-        # Try regex fallback
-        pm = re.search(r'(?:₹|Rs\.?|INR)\s*([\d,]+(?:\.\d{1,2})?)', html, re.I)
-        if pm:
-            p = float(pm.group(1).replace(",", ""))
-            if p > 10:
-                title_match = re.search(r'<title>([^<]+)</title>', html, re.I)
-                title = title_match.group(1).split(" - ")[0].strip() if title_match else "Product"
-                return {
-                    "title": title,
-                    "currentPrice": p,
-                    "originalPrice": None,
-                    "currency": "₹",
-                    "imageUrl": image_url,
-                    "availability": True,
-                    "discountPercent": None,
-                }
-
+        if title and current_price and current_price > 0:
+            return {
+                "title": title,
+                "currentPrice": current_price,
+                "originalPrice": original_price if original_price and original_price > current_price else None,
+                "currency": "₹",
+                "imageUrl": image_url,
+                "availability": availability if availability is not None else True,
+                "discountPercent": discount or (round((1 - current_price / original_price) * 100) if original_price and original_price > current_price else None),
+            }
     except Exception as e:
-        logger.error(f"Flipkart error: {e}")
-
-    return None
-
-    except Exception as e:
-        logger.error(f"Flipkart error: {e}")
-
-    return None
-
-
-def scrape_myntra(url: str) -> dict | None:
-    ua = USER_AGENTS[0]
-
-    # Get cookies first
-    cookie_header = ""
-    try:
-        cookie_resp = cffi_requests.get(
-            "https://www.myntra.com/",
-            headers={**HEADERS, "User-Agent": ua},
-            impersonate="chrome131",
-            timeout=10,
-        )
-        cookies = cookie_resp.cookies
-        cookie_header = "; ".join(f"{k}={v}" for k, v in cookies.items())
-    except Exception as e:
-        logger.error(f"Myntra cookie error: {e}")
-
-    headers = {
-        **HEADERS,
-        "User-Agent": ua,
-        "Referer": "https://www.myntra.com/",
-        "Sec-Fetch-Site": "same-origin",
-    }
-    if cookie_header:
-        headers["Cookie"] = cookie_header
-
-    try:
-        resp = cffi_requests.get(url, headers=headers, impersonate="chrome131", timeout=30)
-        if resp.status_code != 200:
-            logger.error(f"Myntra HTTP {resp.status_code}")
-            return None
-
-        html = resp.text
-        if len(html) < 500 or "Site Maintenance" in html or "Access Denied" in html:
-            logger.error("Myntra returned blocked/maintenance page")
-            return None
-
-        # Try window.__myx
-        match = re.search(r'window\.__myx\s*=\s*(\{.+?\})\s*;?\s*</', html, re.S)
-        if match:
-            try:
-                data = json.loads(match.group(1))
-                pdp = data.get("pdpData", {})
-                price = pdp.get("price", {})
-                brand = pdp.get("brand", {}).get("name", "")
-                name = pdp.get("name", "")
-                title = f"{brand} {name}".strip() if brand else name
-                current_price = price.get("discounted") or price.get("sellingPrice") or price.get("amount")
-                original_price = price.get("mrp") or price.get("originalPrice")
-                discount = price.get("discountPercent")
-
-                # Extract image URL
-                image_url = pdp.get("searchImage") or pdp.get("image")
-                if not image_url:
-                    media = pdp.get("media", {})
-                    albums = media.get("albums", [])
-                    if albums:
-                        images = albums[0].get("images", [])
-                        if images:
-                            image_url = images[0].get("secureSrc") or images[0].get("src")
-
-                # Fix image URL placeholders - format: h_720,q_90,w_540
-                if image_url:
-                    image_url = image_url.replace("($height)", "720")
-                    image_url = image_url.replace("($width)", "540")
-                    image_url = image_url.replace("($qualityPercentage)", "90")
-                    image_url = image_url.replace("($quality)", "90")
-                    image_url = re.sub(r'h_\(\$height\)', 'h_720', image_url)
-                    image_url = re.sub(r'w_\(\$width\)', 'w_540', image_url)
-                    image_url = re.sub(r'q_\(\$qualityPercentage\)', 'q_90', image_url)
-                    logger.info(f"Myntra image: {image_url[:80]}")
-
-                availability = not pdp.get("flags", {}).get("outOfStock", False)
-
-                if title and current_price and current_price > 0:
-                    return {
-                        "title": title,
-                        "currentPrice": current_price,
-                        "originalPrice": original_price if original_price and original_price > current_price else None,
-                        "currency": "₹",
-                        "imageUrl": image_url,
-                        "availability": availability if availability is not None else True,
-                        "discountPercent": discount or (round((1 - current_price / original_price) * 100) if original_price and original_price > current_price else None),
-                    }
-            except Exception as e:
-                logger.error(f"Myntra JSON parse error: {e}")
-
-        # Try JSON-LD
-        soup = BeautifulSoup(html, "lxml")
-        for script in soup.find_all("script", type="application/ld+json"):
-            try:
-                data = json.loads(script.string)
-                offers = data.get("offers")
-                if offers:
-                    if isinstance(offers, list):
-                        offers = offers[0]
-                    price = float(offers.get("price", 0))
-                    if price > 0:
-                        return {
-                            "title": data.get("name", "Product"),
-                            "currentPrice": price,
-                            "originalPrice": float(offers.get("highPrice", 0)) if float(offers.get("highPrice", 0)) > price else None,
-                            "currency": "₹",
-                            "imageUrl": None,
-                            "availability": True,
-                            "discountPercent": None,
-                        }
-            except Exception:
-                continue
-
-        # Regex fallback
-        pm = re.search(r'(?:₹|Rs\.?|INR)\s*([\d,]+(?:\.\d{1,2})?)', html, re.I)
-        if pm:
-            p = float(pm.group(1).replace(",", ""))
-            if p > 10:
-                title_tag = soup.find("h1")
-                title = title_tag.get_text(strip=True) if title_tag else "Product"
-                return {
-                    "title": title,
-                    "currentPrice": p,
-                    "originalPrice": None,
-                    "currency": "₹",
-                    "imageUrl": None,
-                    "availability": True,
-                    "discountPercent": None,
-                }
-
-    except Exception as e:
-        logger.error(f"Myntra error: {e}")
+        logger.error(f"Myntra parse error: {e}")
 
     return None
 
@@ -308,7 +142,24 @@ async def scrape(request: Request):
     logger.info(f"Scraping {store or 'unknown'}: {url}")
 
     is_myntra = store == "myntra" or "myntra.com" in url
-    result = scrape_myntra(url) if is_myntra else scrape_flipkart(url)
+
+    if is_myntra:
+        # Get cookies first
+        cookie_header = ""
+        try:
+            cookie_resp = cffi_requests.get("https://www.myntra.com/", headers=HEADERS, impersonate="chrome131", timeout=10)
+            cookie_header = "; ".join(f"{k}={v}" for k, v in cookie_resp.cookies.items())
+        except Exception:
+            pass
+
+        extra = {"Referer": "https://www.myntra.com/", "Sec-Fetch-Site": "same-origin"}
+        if cookie_header:
+            extra["Cookie"] = cookie_header
+        html = fetch_html(url, extra)
+        result = extract_myntra(html) if html else None
+    else:
+        html = fetch_html(url, {"Referer": "https://www.flipkart.com/"})
+        result = extract_flipkart(html) if html else None
 
     if result:
         return {"success": True, "data": result}
@@ -318,54 +169,6 @@ async def scrape(request: Request):
 @app.get("/health")
 async def health():
     return {"success": True}
-
-
-@app.post("/debug")
-async def debug(request: Request):
-    body = await request.json()
-    url = body.get("url")
-    if not url:
-        return JSONResponse({"success": False, "error": "url is required"}, status_code=400)
-
-    ua = USER_AGENTS[0]
-    headers = {**HEADERS, "User-Agent": ua, "Referer": "https://www.flipkart.com/"}
-
-    try:
-        resp = cffi_requests.get(url, headers=headers, impersonate="chrome131", timeout=30)
-        html = resp.text
-        soup = BeautifulSoup(html, "lxml")
-
-        # Find all img tags
-        imgs = []
-        for img in soup.find_all("img"):
-            src = img.get("src") or img.get("data-src") or ""
-            if "rukmini" in src or "flipkart" in src or "image" in src.lower():
-                imgs.append(src[:200])
-
-        # Find og:image
-        og = soup.find("meta", property="og:image")
-        og_url = og.get("content") if og else None
-
-        # Find any script with image data
-        image_scripts = []
-        for script in soup.find_all("script"):
-            text = script.string or ""
-            if "imageData" in text or "imageUrl" in text or "searchImage" in text:
-                # Extract a snippet around the image reference
-                idx = text.find("imageData") or text.find("imageUrl") or text.find("searchImage")
-                if idx >= 0:
-                    image_scripts.append(text[max(0, idx-50):idx+200])
-
-        return {
-            "success": True,
-            "htmlLen": len(html),
-            "ogImage": og_url,
-            "imgTags": imgs[:5],
-            "imageSnippets": image_scripts[:3],
-            "title": soup.title.string if soup.title else None,
-        }
-    except Exception as e:
-        return {"success": False, "error": str(e)}
 
 
 if __name__ == "__main__":
