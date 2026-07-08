@@ -58,11 +58,13 @@ def extract_flipkart_image(html: str) -> str | None:
         # Replace placeholders: {@width} {@height} {@quality}
         url = url.replace("{@width}", "1920").replace("{@height}", "1920").replace("{@quality}", "90")
         if "rukmini" in url or "flixcart" in url:
+            logger.info(f"Flipkart image from imageURL: {url[:80]}")
             return url
 
     # Try og:image meta tag
     match = re.search(r'content="(https?://[^"]*rukmini[^"]*)"', html, re.I)
     if match:
+        logger.info(f"Flipkart image from og:image: {match.group(1)[:80]}")
         return match.group(1)
 
     # Try any rukmini URL in HTML
@@ -70,8 +72,10 @@ def extract_flipkart_image(html: str) -> str | None:
     if match:
         url = match.group(1).replace("\\u002f", "/")
         url = url.replace("{@width}", "1920").replace("{@height}", "1920").replace("{@quality}", "90")
+        logger.info(f"Flipkart image from rukmini: {url[:80]}")
         return url
 
+    logger.warning("No Flipkart image found")
     return None
 
 
@@ -234,6 +238,7 @@ def scrape_myntra(url: str) -> dict | None:
                     image_url = re.sub(r'h_\(\$height\)', 'h_720', image_url)
                     image_url = re.sub(r'w_\(\$width\)', 'w_540', image_url)
                     image_url = re.sub(r'q_\(\$qualityPercentage\)', 'q_90', image_url)
+                    logger.info(f"Myntra image: {image_url[:80]}")
 
                 availability = not pdp.get("flags", {}).get("outOfStock", False)
 
