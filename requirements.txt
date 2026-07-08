@@ -1,0 +1,6 @@
+flask>=3.0
+gunicorn>=22
+requests>=2.31
+beautifulsoup4>=4.12
+playwright>=1.48
+lxml>=5.1
