@@ -8,7 +8,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY src/main.py .
+ARG BUILD_TIME=none
+COPY src/ ./src/
+RUN cp src/main.py .
 
 EXPOSE 8080
 CMD ["python", "main.py"]
