@@ -15,12 +15,50 @@ async function getBrowser() {
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-gpu',
-        '--disable-web-security',
-        '--disable-features=IsolateOrigins,site-per-process',
+        '--no-zygote',
+        '--single-process',
       ],
     });
   }
   return browser;
+}
+
+async function fetchMyntraApi(productId) {
+  try {
+    const apiUrl = `https://www.myntra.com/gateway/v2/product/${productId}`;
+    const res = await fetch(apiUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Referer': 'https://www.myntra.com/',
+      },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data?.style?.id) return null;
+
+    const style = data.style;
+    const priceInfo = style.price || {};
+    const mrp = priceInfo.mrp;
+    const sellingPrice = priceInfo.sellingPrice || priceInfo.discountedPrice;
+    const discount = priceInfo.discountLabel?.match(/(\d+)/)?.[0]
+      ? parseInt(priceInfo.discountLabel.match(/(\d+)/)[0])
+      : (mrp && sellingPrice ? Math.round((1 - sellingPrice / mrp) * 100) : null);
+    const media = style.media || [];
+
+    return {
+      title: style.name || style.productName || 'Product',
+      currentPrice: sellingPrice || mrp,
+      originalPrice: mrp > sellingPrice ? mrp : null,
+      currency: '₹',
+      imageUrl: media[0]?.src || media[0]?.url || null,
+      availability: style.available || true,
+      discountPercent: discount,
+    };
+  } catch (e) {
+    console.error('Myntra API error:', e.message);
+    return null;
+  }
 }
 
 function isBlockedPage(text) {
@@ -129,6 +167,19 @@ app.post('/scrape', async (req, res) => {
 
   console.log(`Scraping ${store || 'unknown'}: ${url}`);
 
+  // For Myntra, try the internal API first (faster, no Puppeteer)
+  if (store === 'myntra' || url.includes('myntra.com')) {
+    const productIdMatch = url.match(/myntra\.com\/(?:[^/]+\/)?(?:p\/)?([a-zA-Z0-9]+)/);
+    if (productIdMatch?.[1]) {
+      const apiResult = await fetchMyntraApi(productIdMatch[1]);
+      if (apiResult) {
+        console.log(`Myntra API success for ${productIdMatch[1]}`);
+        return res.json({ success: true, data: apiResult });
+      }
+      console.log(`Myntra API failed for ${productIdMatch[1]}, falling back to Puppeteer`);
+    }
+  }
+
   let browserInstance;
   let page = null;
 
@@ -140,14 +191,20 @@ app.post('/scrape', async (req, res) => {
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36');
 
     const response = await page.goto(url, {
-      waitUntil: 'networkidle0',
-      timeout: 30000,
+      waitUntil: 'domcontentloaded',
+      timeout: 25000,
     });
 
+    // Wait extra for JS-rendered content
+    await new Promise(r => setTimeout(r, 3000));
+
     const html = await page.content();
+    console.log(`Page HTML length: ${html.length}`);
 
     if (isBlockedPage(html)) {
       await page.close();
+      // Log first 500 chars for debugging
+      console.log(`Blocked page content (first 500 chars): ${html.substring(0, 500)}`);
       return res.json({ success: false, error: 'Blocked by target site' });
     }
 
@@ -157,14 +214,10 @@ app.post('/scrape', async (req, res) => {
       return res.json({ success: false, error: `HTTP ${status}` });
     }
 
-    // Wait a bit for dynamic content
-    await new Promise(r => setTimeout(r, 2000));
-
     const data = extractFromPage(page);
     await page.close();
 
     if (!data.currentPrice) {
-      // Fallback: try regex on raw HTML
       const priceMatch = html.match(/(?:₹|Rs\.?|INR)\s*([\d,]+(?:\.\d{2})?)/i);
       if (priceMatch) {
         data.currentPrice = parsePrice(priceMatch[0]);
@@ -201,6 +254,36 @@ app.post('/scrape', async (req, res) => {
 
 app.get('/health', (req, res) => {
   res.json({ success: true, uptime: process.uptime() });
+});
+
+app.post('/debug', async (req, res) => {
+  const { url } = req.body || {};
+  if (!url) return res.status(400).json({ success: false, error: 'url is required' });
+
+  let page;
+  try {
+    const browserInstance = await getBrowser();
+    page = await browserInstance.newPage();
+    await page.setViewport({ width: 1920, height: 1080 });
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36');
+
+    const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 25000 });
+    await new Promise(r => setTimeout(r, 2000));
+    const html = await page.content();
+    const status = response?.status();
+
+    res.json({
+      success: true,
+      status,
+      htmlLength: html.length,
+      snippet: html.substring(0, 2000),
+      isBlocked: isBlockedPage(html),
+    });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  } finally {
+    if (page) await page.close().catch(() => {});
+  }
 });
 
 const PORT = process.env.PORT || 3000;
