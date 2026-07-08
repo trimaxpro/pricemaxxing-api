@@ -4,16 +4,35 @@ import puppeteer from 'puppeteer';
 const app = express();
 app.use(express.json({ limit: '1mb' }));
 
+// User agent pool for rotation
+const USER_AGENTS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
+];
+
 let browser;
 
 async function getBrowser() {
   if (!browser || !browser.isConnected()) {
     browser = await puppeteer.launch({
-      headless: true,
+      headless: 'new',
       args: [
-        '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
-        '--disable-gpu', '--no-zygote', '--single-process',
-        '--disable-blink-features=AutomationControlled', '--disable-http2',
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--no-first-run',
+        '--no-zygote',
+        '--single-process',
+        '--disable-gpu',
+        '--disable-blink-features=AutomationControlled',
+        '--disable-features=IsolateOrigins,site-per-process',
+        '--disable-web-security',
+        '--window-size=1920,1080',
+        '--start-maximized',
       ],
     });
   }
@@ -21,17 +40,112 @@ async function getBrowser() {
 }
 
 async function setupPage(page) {
-  await page.setViewport({ width: 1920 + Math.floor(Math.random() * 100), height: 1080 + Math.floor(Math.random() * 100) });
-  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
+  // Randomize viewport size
+  const width = 1920 + Math.floor(Math.random() * 200) - 100;
+  const height = 1080 + Math.floor(Math.random() * 200) - 100;
+  await page.setViewport({ width, height });
+
+  // Rotate user agent
+  const ua = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+  await page.setUserAgent(ua);
+
+  // Comprehensive anti-detection
   await page.evaluateOnNewDocument(() => {
-    Object.defineProperty(navigator, 'webdriver', { get: () => false });
-    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-    Object.defineProperty(navigator, 'languages', { get: () => ['en-IN', 'en', 'hi'] });
+    // Override webdriver
+    Object.defineProperty(navigator, 'webdriver', {
+      get: () => false,
+    });
+
+    // Override plugins
+    Object.defineProperty(navigator, 'plugins', {
+      get: () => [
+        { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+        { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+        { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' },
+      ],
+    });
+
+    // Override languages
+    Object.defineProperty(navigator, 'languages', {
+      get: () => ['en-IN', 'en-US', 'en', 'hi'],
+    });
+
+    // Override platform
+    Object.defineProperty(navigator, 'platform', {
+      get: () => 'Win32',
+    });
+
+    // Override hardware concurrency
+    Object.defineProperty(navigator, 'hardwareConcurrency', {
+      get: () => 8,
+    });
+
+    // Override device memory
+    Object.defineProperty(navigator, 'deviceMemory', {
+      get: () => 8,
+    });
+
+    // Override maxTouchPoints
+    Object.defineProperty(navigator, 'maxTouchPoints', {
+      get: () => 0,
+    });
+
+    // Override permissions
+    const originalQuery = window.navigator.permissions.query;
+    window.navigator.permissions.query = (parameters) =>
+      parameters.name === 'notifications'
+        ? Promise.resolve({ state: Notification.permission })
+        : originalQuery(parameters);
+
+    // Override chrome runtime
+    window.chrome = {
+      runtime: {},
+      loadTimes: function () {},
+      csi: function () {},
+      app: {
+        isInstalled: false,
+        InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
+        RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' },
+      },
+    };
+
+    // Override connection
+    Object.defineProperty(navigator, 'connection', {
+      get: () => ({
+        rtt: 50,
+        downlink: 10,
+        effectiveType: '4g',
+        saveData: false,
+      }),
+    });
+
+    // WebGL vendor and renderer
+    const getParameter = WebGLRenderingContext.prototype.getParameter;
+    WebGLRenderingContext.prototype.getParameter = function (parameter) {
+      if (parameter === 37445) return 'Intel Inc.';
+      if (parameter === 37446) return 'Intel Iris OpenGL Engine';
+      return getParameter.apply(this, arguments);
+    };
+  });
+
+  // Set extra HTTP headers
+  await page.setExtraHTTPHeaders({
+    'Accept-Language': 'en-IN,en-US;q=0.9,en;q=0.8,hi;q=0.7',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-User': '?1',
+    'Upgrade-Insecure-Requests': '1',
+    'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="131", "Google Chrome";v="131"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"Windows"',
   });
 }
 
 // ============================================
-// MYNTRA — extract window.__myx from HTML
+// MYNTRA
 // ============================================
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
@@ -49,7 +163,8 @@ function extractMyxData(html) {
     const currentPrice = price?.discounted || price?.sellingPrice || price?.amount || null;
     const originalPrice = price?.mrp || price?.originalPrice || null;
     const discount = price?.discountPercent || null;
-    const imageUrl = pdp?.searchImage || pdp?.image || pdp?.media?.[0]?.src || null;
+    let imageUrl = pdp?.searchImage || pdp?.image || pdp?.media?.albums?.[0]?.images?.[0]?.secureSrc || pdp?.media?.albums?.[0]?.images?.[0]?.src || null;
+    if (imageUrl) imageUrl = imageUrl.replace(/\([^)]*\)/g, '80').replace(/,+/g, ',');
     const availability = !pdp?.flags?.outOfStock;
     if (title && currentPrice > 0) {
       return { title, currentPrice, originalPrice: originalPrice > currentPrice ? originalPrice : null, currency: '₹', imageUrl, availability: availability ?? true, discountPercent: discount || (originalPrice > currentPrice ? Math.round((1 - currentPrice / originalPrice) * 100) : null) };
@@ -58,35 +173,130 @@ function extractMyxData(html) {
   return null;
 }
 
-async function scrapeMyntra(url) {
+async function scrapeMyntraViaFetch(url) {
+  const ua = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
   let cookieHeader = '';
+
+  // First request to get cookies
   try {
     const cookieRes = await fetch('https://www.myntra.com/', {
-      headers: { 'User-Agent': UA, 'Accept': 'text/html', 'Referer': 'https://www.myntra.com/' },
-      signal: AbortSignal.timeout(8000),
+      headers: {
+        'User-Agent': ua,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'en-IN,en-US;q=0.9,en;q=0.8,hi;q=0.7',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1',
+        'Upgrade-Insecure-Requests': '1',
+      },
+      signal: AbortSignal.timeout(10000),
+      redirect: 'follow',
     });
     const setCookie = cookieRes.headers.get('set-cookie') || '';
     cookieHeader = setCookie.split(',').map(c => c.split(';')[0]).join('; ');
-  } catch {}
+  } catch (e) {
+    console.error('Myntra cookie fetch error:', e.message);
+  }
 
-  const res = await fetch(url, {
-    headers: {
-      'User-Agent': UA,
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': 'en-IN,en;q=0.9,hi;q=0.8',
-      'Referer': 'https://www.myntra.com/',
-      ...(cookieHeader ? { 'Cookie': cookieHeader } : {}),
-    },
-    signal: AbortSignal.timeout(25000),
-  });
-  if (!res.ok) return null;
+  // Actual product page request
+  try {
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': ua,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'en-IN,en-US;q=0.9,en;q=0.8,hi;q=0.7',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Referer': 'https://www.myntra.com/',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'same-origin',
+        'Sec-Fetch-User': '?1',
+        'Upgrade-Insecure-Requests': '1',
+        'Cache-Control': 'max-age=0',
+        ...(cookieHeader ? { 'Cookie': cookieHeader } : {}),
+      },
+      signal: AbortSignal.timeout(25000),
+      redirect: 'follow',
+    });
+    if (!res.ok) return null;
+    const html = await res.text();
+    if (html.length < 500 || html.includes('Site Maintenance') || html.includes('Access Denied')) {
+      return null;
+    }
+    return extractMyxData(html);
+  } catch (e) {
+    console.error('Myntra fetch error:', e.message);
+    return null;
+  }
+}
 
-  const html = await res.text();
-  return extractMyxData(html);
+async function scrapeMyntraViaPuppeteer(url) {
+  let page;
+  try {
+    const bi = await getBrowser();
+    page = await bi.newPage();
+    await setupPage(page);
+
+    console.log(`Navigating to Myntra: ${url}`);
+    const resp = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+
+    if (!resp) {
+      console.error('No response from Myntra');
+      return null;
+    }
+
+    if (resp.status() >= 400) {
+      console.error(`Myntra returned status: ${resp.status()}`);
+      return null;
+    }
+
+    // Wait for page to stabilize
+    await new Promise(r => setTimeout(r, 3000));
+
+    // Check current URL
+    const currentUrl = page.url();
+    console.log(`Current URL: ${currentUrl}`);
+
+    // Wait for content to load
+    try {
+      await page.waitForSelector('script[type="application/ld+json"], [class*="pdp-price"], h1', { timeout: 10000 });
+    } catch {
+      console.log('Timeout waiting for Myntra content');
+    }
+
+    // Additional wait
+    await new Promise(r => setTimeout(r, 2000));
+
+    const html = await page.content();
+
+    // Check for blocked/maintenance page
+    if (html.length < 500 || html.includes('Site Maintenance') || html.includes('Access Denied')) {
+      console.error('Myntra returned maintenance/blocked page');
+      return null;
+    }
+
+    return extractMyxData(html);
+  } catch (err) {
+    console.error(`Myntra Puppeteer error:`, err.message);
+    return null;
+  } finally {
+    if (page) await page.close().catch(() => {});
+  }
+}
+
+async function scrapeMyntra(url) {
+  // Try Puppeteer first (more likely to succeed against anti-bot)
+  const puppeteerResult = await scrapeMyntraViaPuppeteer(url);
+  if (puppeteerResult) return puppeteerResult;
+
+  // Fallback to fetch
+  return scrapeMyntraViaFetch(url);
 }
 
 // ============================================
-// FLIPKART — Puppeteer with intercept + DOM
+// FLIPKART
 // ============================================
 
 function tryExtractFlipkartApiData(data) {
@@ -114,48 +324,146 @@ async function scrapeFlipkartViaPuppeteer(url) {
     page = await bi.newPage();
     await setupPage(page);
 
+    // Enable request interception for API calls
     const apis = [];
     await page.setRequestInterception(true);
-    page.on('request', r => r.continue());
-    page.on('response', async (r) => {
-      const u = r.url();
-      if (u.includes('.api.flipkart.com') && (u.includes('/product/') || u.includes('/page/') || u.includes('price') || u.includes('offers'))) {
-        try {
-          const ct = r.headers()['content-type'] || '';
-          if (ct.includes('json')) apis.push(await r.json());
-        } catch {}
+
+    page.on('request', (request) => {
+      // Allow all requests but modify headers for better stealth
+      const headers = { ...request.headers() };
+      request.continue({ headers });
+    });
+
+    page.on('response', async (response) => {
+      const u = response.url();
+      // Capture Flipkart API responses
+      if (u.includes('api.flipkart.com') || u.includes('www.flipkart.com/api')) {
+        const ct = response.headers()['content-type'] || '';
+        if (ct.includes('json')) {
+          try {
+            const data = await response.json();
+            if (data?.product || data?.data?.product || u.includes('price') || u.includes('offer')) {
+              apis.push(data);
+            }
+          } catch {}
+        }
       }
     });
 
-    const resp = await page.goto(url, { waitUntil: 'networkidle2', timeout: 35000 });
-    if (!resp || (resp.status() >= 400 && resp.status() < 500)) return null;
-    await new Promise(r => setTimeout(r, 4000));
+    // Navigate with domcontentloaded first, then wait for network
+    console.log(`Navigating to: ${url}`);
+    const resp = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
-    for (const d of apis) { const e = tryExtractFlipkartApiData(d); if (e) return e; }
+    if (!resp) {
+      console.error('No response from Flipkart');
+      return null;
+    }
 
+    if (resp.status() >= 400) {
+      console.error(`Flipkart returned status: ${resp.status()}`);
+      return null;
+    }
+
+    // Wait for page to stabilize
+    await new Promise(r => setTimeout(r, 3000));
+
+    // Check if we got redirected to homepage
+    const currentUrl = page.url();
+    const pageTitle = await page.title();
+    console.log(`Current URL: ${currentUrl}`);
+    console.log(`Page title: ${pageTitle}`);
+
+    // If redirected to homepage, try waiting for product content
+    if (!currentUrl.includes('/p/') && !currentUrl.includes('itm')) {
+      console.log('Redirected to non-product page, waiting for content...');
+      await new Promise(r => setTimeout(r, 5000));
+    }
+
+    // Try to wait for product-specific elements
+    try {
+      await page.waitForSelector('h1 span, [class*="price"], [class*="Price"], [data-testid="product-title"]', { timeout: 10000 });
+    } catch {
+      console.log('Timeout waiting for product elements');
+    }
+
+    // Additional wait for API calls
+    await new Promise(r => setTimeout(r, 2000));
+
+    // Check intercepted APIs first
+    for (const d of apis) {
+      const e = tryExtractFlipkartApiData(d);
+      if (e) {
+        console.log('Extracted data from API response');
+        return e;
+      }
+    }
+
+    // Extract from page content
     const data = await page.evaluate(() => {
       const d = {};
+
+      // Try JSON-LD first
       for (const s of document.querySelectorAll('script[type="application/ld+json"]')) {
         try {
           const j = JSON.parse(s.textContent);
           if (j.offers) {
             for (const o of (Array.isArray(j.offers) ? j.offers : [j.offers])) {
               const p = parseFloat(o.price);
-              if (p > 0) { d.currentPrice = p; d.title = d.title || j.name; d.originalPrice = d.originalPrice || parseFloat(o.highPrice) || null; break; }
+              if (p > 0) {
+                d.currentPrice = p;
+                d.title = d.title || j.name;
+                d.originalPrice = d.originalPrice || parseFloat(o.highPrice) || null;
+                break;
+              }
             }
           }
           d.title = d.title || j.name;
         } catch {}
       }
 
-      const priceEl = document.querySelector('[class*="price"]') || document.querySelector('[class*="Price"]');
-      if (priceEl) { const m = (priceEl.textContent || '').match(/₹\s*([\d,]+(?:\.\d{1,2})?)/); if (m) d.currentPrice = d.currentPrice || parseFloat(m[1].replace(/,/g, '')); }
-      const mrpEl = document.querySelector('[class*="mrp"]') || document.querySelector('[class*="original"]');
-      if (mrpEl) { const m = (mrpEl.textContent || '').match(/₹\s*([\d,]+(?:\.\d{1,2})?)/); if (m) { const p = parseFloat(m[1].replace(/,/g, '')); if (p > 0 && (!d.originalPrice || p > d.currentPrice)) d.originalPrice = p; }}
+      // Try various price selectors
+      const priceSelectors = [
+        '[class*="price"]', '[class*="Price"]', '[data-testid="price"]',
+        '._30jeq3', '.Nx9bqj', '.CEmiEU', 'div[class*="price"]',
+      ];
+      for (const sel of priceSelectors) {
+        const el = document.querySelector(sel);
+        if (el) {
+          const m = (el.textContent || '').match(/₹\s*([\d,]+(?:\.\d{1,2})?)/);
+          if (m) {
+            d.currentPrice = d.currentPrice || parseFloat(m[1].replace(/,/g, ''));
+            break;
+          }
+        }
+      }
 
+      // Try MRP selectors
+      const mrpSelectors = [
+        '[class*="mrp"]', '[class*="original"]', '[class*="strike"]',
+        '._3I9_wc', '.yF0R2_', 'del', 's',
+      ];
+      for (const sel of mrpSelectors) {
+        const el = document.querySelector(sel);
+        if (el) {
+          const m = (el.textContent || '').match(/₹\s*([\d,]+(?:\.\d{1,2})?)/);
+          if (m) {
+            const p = parseFloat(m[1].replace(/,/g, ''));
+            if (p > 0 && (!d.originalPrice || p > d.currentPrice)) {
+              d.originalPrice = p;
+            }
+          }
+        }
+      }
+
+      // Fallback: extract all prices from page
       if (!d.currentPrice) {
         const lines = (document.body?.innerText || '').split('\n').filter(l => l.includes('₹'));
-        const prices = lines.map(l => { const m = l.match(/₹\s*([\d,]+(?:\.\d{1,2})?)/); return m ? parseFloat(m[1].replace(/,/g, '')) : null; }).filter(p => p !== null && p > 20 && p < 10000000);
+        const prices = lines
+          .map(l => {
+            const m = l.match(/₹\s*([\d,]+(?:\.\d{1,2})?)/);
+            return m ? parseFloat(m[1].replace(/,/g, '')) : null;
+          })
+          .filter(p => p !== null && p > 20 && p < 10000000);
         if (prices.length > 0) {
           prices.sort((a, b) => a - b);
           d.currentPrice = prices[Math.floor(prices.length / 2)];
@@ -164,28 +472,73 @@ async function scrapeFlipkartViaPuppeteer(url) {
         }
       }
 
-      d.title = d.title || document.querySelector('h1 span')?.textContent?.trim() || document.querySelector('h1')?.textContent?.trim() || document.title.split(' - ')[0]?.trim() || document.title.split('|')[0]?.trim() || '';
-      const imgEl = document.querySelector('[class*="image"] img') || document.querySelector('img[src*="flipkart"]') || document.querySelector('img[src*="rukmini"]');
-      d.imageUrl = imgEl?.getAttribute('src') || imgEl?.getAttribute('data-src') || null;
+      // Title extraction
+      d.title = d.title ||
+        document.querySelector('h1 span')?.textContent?.trim() ||
+        document.querySelector('h1')?.textContent?.trim() ||
+        document.title.split(' - ')[0]?.trim() ||
+        document.title.split('|')[0]?.trim() ||
+        '';
+
+      // Image extraction
+      const imgSelectors = [
+        '[class*="image"] img', 'img[src*="flipkart"]', 'img[src*="rukmini"]',
+        'img[loading="eager"]', '.CXW8mj img',
+      ];
+      for (const sel of imgSelectors) {
+        const el = document.querySelector(sel);
+        if (el) {
+          d.imageUrl = el.getAttribute('src') || el.getAttribute('data-src') || null;
+          if (d.imageUrl) break;
+        }
+      }
+
+      // Discount extraction
       const discEl = document.querySelector('[class*="discount"]');
-      if (discEl) { const m = discEl.textContent.match(/(\d+)%/); if (m) d.discountPercent = parseInt(m[1]); }
-      if (!d.discountPercent && d.originalPrice > d.currentPrice) d.discountPercent = Math.round((1 - d.currentPrice / d.originalPrice) * 100);
+      if (discEl) {
+        const m = discEl.textContent.match(/(\d+)%/);
+        if (m) d.discountPercent = parseInt(m[1]);
+      }
+      if (!d.discountPercent && d.originalPrice > d.currentPrice) {
+        d.discountPercent = Math.round((1 - d.currentPrice / d.originalPrice) * 100);
+      }
+
       return d;
     });
 
     if (data.currentPrice > 0) {
-      return { title: data.title || 'Product', currentPrice: data.currentPrice, originalPrice: data.originalPrice > data.currentPrice ? data.originalPrice : null, currency: '₹', imageUrl: data.imageUrl || null, availability: true, discountPercent: data.discountPercent || null };
+      console.log(`Extracted: ${data.title} - ₹${data.currentPrice}`);
+      return {
+        title: data.title || 'Product',
+        currentPrice: data.currentPrice,
+        originalPrice: data.originalPrice > data.currentPrice ? data.originalPrice : null,
+        currency: '₹',
+        imageUrl: data.imageUrl || null,
+        availability: true,
+        discountPercent: data.discountPercent || null,
+      };
     }
 
+    // Last resort: regex from HTML
     const html = await page.content();
     const pm = html.match(/(?:₹|Rs\.?|INR)\s*([\d,]+(?:\.\d{1,2})?)/i);
     if (pm) {
       const p = parseFloat(pm[1].replace(/,/g, ''));
       if (p > 10) {
         const tm = html.match(/<title>([^<]+)<\/title>/i);
-        return { title: (tm?.[1] || '').split(' - ')[0]?.trim() || 'Product', currentPrice: p, originalPrice: null, currency: '₹', imageUrl: null, availability: true, discountPercent: null };
+        return {
+          title: (tm?.[1] || '').split(' - ')[0]?.trim() || 'Product',
+          currentPrice: p,
+          originalPrice: null,
+          currency: '₹',
+          imageUrl: null,
+          availability: true,
+          discountPercent: null,
+        };
       }
     }
+
+    console.error('Could not extract price from Flipkart page');
     return null;
   } catch (err) {
     console.error(`Flipkart error:`, err.message);
@@ -224,38 +577,107 @@ app.post('/debug', async (req, res) => {
   if (!url) return res.status(400).json({ success: false, error: 'url is required' });
 
   const isMyntra = url.includes('myntra.com');
-  if (isMyntra) {
-    let c = '';
-    try { const cr = await fetch('https://www.myntra.com/', { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(8000) }); c = (cr.headers.get('set-cookie') || '').split(',').map(c => c.split(';')[0]).join('; '); } catch {}
-    const r = await fetch(url, { headers: { 'User-Agent': UA, 'Accept': 'text/html', ...(c ? { 'Cookie': c } : {}) }, signal: AbortSignal.timeout(25000) });
-    const html = await r.text();
-    const hasMyx = html.includes('window.__myx');
-    const match = html.match(/window\.__myx\s*=\s*(\{.+?\})(?:\s*;)?\s*<\//s);
-    let pdpData = null;
-    try { pdpData = match ? (JSON.parse(match[1])?.pdpData || {}) : null; } catch {}
-    return res.json({ success: true, status: r.status, htmlLen: html.length, hasWindowMyx: hasMyx, pdpKeys: pdpData ? Object.keys(pdpData).slice(0, 15) : null, snippet: html.substring(0, 1500) });
-  }
+  let page;
 
+  try {
+    const bi = await getBrowser();
+    page = await bi.newPage();
+    await setupPage(page);
+
+    const apis = [];
+    await page.setRequestInterception(true);
+
+    page.on('request', (request) => {
+      request.continue();
+    });
+
+    page.on('response', async (response) => {
+      const u = response.url();
+      const ct = response.headers()['content-type'] || '';
+      if (ct.includes('json')) {
+        try {
+          apis.push({ url: u.substring(0, 200), status: response.status() });
+        } catch {}
+      }
+    });
+
+    console.log(`Debug navigating to: ${url}`);
+    const resp = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+
+    // Wait for content
+    await new Promise(r => setTimeout(r, 5000));
+
+    const currentUrl = page.url();
+    const html = await page.content();
+
+    const pd = await page.evaluate(() => {
+      const t = document.body?.innerText || '';
+      const ps = [...t.matchAll(/₹\s*([\d,]+(?:\.\d{1,2})?)/g)];
+      return {
+        h1: document.querySelector('h1')?.textContent?.trim() || '',
+        title: document.title,
+        prices: ps.slice(0, 10).map(m => m[0]),
+        url: window.location.href,
+        bodyLength: document.body?.innerText?.length || 0,
+      };
+    });
+
+    // For Myntra, check for window.__myx
+    let myntraData = null;
+    if (isMyntra) {
+      const hasMyx = html.includes('window.__myx');
+      const match = html.match(/window\.__myx\s*=\s*(\{.+?\})(?:\s*;)?\s*<\//s);
+      try {
+        myntraData = match ? { hasWindowMyx: true, pdpKeys: Object.keys(JSON.parse(match[1])?.pdpData || {}).slice(0, 15) } : { hasWindowMyx: false };
+      } catch {
+        myntraData = { hasWindowMyx: false };
+      }
+    }
+
+    res.json({
+      success: true,
+      status: resp?.status(),
+      finalUrl: currentUrl,
+      htmlLen: html.length,
+      pageData: pd,
+      myntraData,
+      apiCount: apis.length,
+      apis: apis.slice(0, 10),
+      snippet: html.substring(0, 2000),
+    });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  } finally {
+    if (page) await page.close().catch(() => {});
+  }
+});
+
+// Test endpoint to verify stealth configuration
+app.get('/test-stealth', async (req, res) => {
   let page;
   try {
     const bi = await getBrowser();
     page = await bi.newPage();
     await setupPage(page);
-    const apis = [];
-    page.on('response', async (r) => {
-      if (r.url().includes('api') && (r.headers()['content-type'] || '').includes('json')) {
-        try { apis.push({ url: r.url().substring(0, 200), status: r.status() }); } catch {}
-      }
-    });
-    const resp = await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+
+    // Navigate to a detection test page
+    await page.goto('https://bot.sannysoft.com/', { waitUntil: 'networkidle2', timeout: 30000 });
     await new Promise(r => setTimeout(r, 3000));
-    const html = await page.content();
-    const pd = await page.evaluate(() => {
-      const t = document.body?.innerText || '';
-      const ps = [...t.matchAll(/₹\s*([\d,]+(?:\.\d{1,2})?)/g)];
-      return { h1: document.querySelector('h1')?.textContent?.trim() || '', title: document.title, prices: ps.slice(0, 10).map(m => m[0]) };
+
+    const results = await page.evaluate(() => {
+      return {
+        webdriver: navigator.webdriver,
+        languages: navigator.languages,
+        plugins: navigator.plugins.length,
+        platform: navigator.platform,
+        hardwareConcurrency: navigator.hardwareConcurrency,
+        deviceMemory: navigator.deviceMemory,
+        chrome: !!window.chrome,
+        title: document.title,
+      };
     });
-    res.json({ success: true, status: resp?.status(), htmlLen: html.length, pageData: pd, apis: apis.slice(0, 5), snippet: html.substring(0, 1500) });
+
+    res.json({ success: true, results });
   } catch (err) {
     res.json({ success: false, error: err.message });
   } finally {
