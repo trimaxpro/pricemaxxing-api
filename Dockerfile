@@ -1,10 +1,14 @@
-FROM ghcr.io/puppeteer/puppeteer:latest
+FROM python:3.12-slim
 
 WORKDIR /app
-COPY package*.json ./
-RUN npm install --production
-COPY src/ ./src/
 
-EXPOSE 3000
-ENV NODE_ENV=production
-CMD ["node", "src/index.js"]
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc g++ && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY main.py .
+
+EXPOSE 8080
+CMD ["python", "main.py"]
