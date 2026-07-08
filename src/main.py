@@ -288,6 +288,54 @@ async def health():
     return {"success": True}
 
 
+@app.post("/debug")
+async def debug(request: Request):
+    body = await request.json()
+    url = body.get("url")
+    if not url:
+        return JSONResponse({"success": False, "error": "url is required"}, status_code=400)
+
+    ua = USER_AGENTS[0]
+    headers = {**HEADERS, "User-Agent": ua, "Referer": "https://www.flipkart.com/"}
+
+    try:
+        resp = cffi_requests.get(url, headers=headers, impersonate="chrome131", timeout=30)
+        html = resp.text
+        soup = BeautifulSoup(html, "lxml")
+
+        # Find all img tags
+        imgs = []
+        for img in soup.find_all("img"):
+            src = img.get("src") or img.get("data-src") or ""
+            if "rukmini" in src or "flipkart" in src or "image" in src.lower():
+                imgs.append(src[:200])
+
+        # Find og:image
+        og = soup.find("meta", property="og:image")
+        og_url = og.get("content") if og else None
+
+        # Find any script with image data
+        image_scripts = []
+        for script in soup.find_all("script"):
+            text = script.string or ""
+            if "imageData" in text or "imageUrl" in text or "searchImage" in text:
+                # Extract a snippet around the image reference
+                idx = text.find("imageData") or text.find("imageUrl") or text.find("searchImage")
+                if idx >= 0:
+                    image_scripts.append(text[max(0, idx-50):idx+200])
+
+        return {
+            "success": True,
+            "htmlLen": len(html),
+            "ogImage": og_url,
+            "imgTags": imgs[:5],
+            "imageSnippets": image_scripts[:3],
+            "title": soup.title.string if soup.title else None,
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8080)
