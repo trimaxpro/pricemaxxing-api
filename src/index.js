@@ -150,6 +150,68 @@ async function setupPage(page) {
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
+// Extract product ID from Myntra URL
+function extractMyntraProductId(url) {
+  try {
+    const urlObj = new URL(url);
+    const pathParts = urlObj.pathname.split('/').filter(Boolean);
+    // Try pid pattern first
+    const pidIndex = pathParts.findIndex(part => part === 'pid');
+    if (pidIndex !== -1 && pathParts[pidIndex + 1]) {
+      return pathParts[pidIndex + 1];
+    }
+    // Try last numeric segment
+    for (const part of pathParts.reverse()) {
+      if (/^\d+$/.test(part)) return part;
+    }
+  } catch {}
+  return null;
+}
+
+// Try Myntra internal API (may bypass IP blocking)
+async function scrapeMyntraViaApi(url) {
+  const productId = extractMyntraProductId(url);
+  if (!productId) return null;
+
+  const apiUrls = [
+    `https://www.myntra.com/gateway/v2/product/${productId}`,
+    `https://www.myntra.com/gateway/v1/product/${productId}`,
+  ];
+
+  for (const apiUrl of apiUrls) {
+    try {
+      const res = await fetch(apiUrl, {
+        headers: {
+          'User-Agent': UA,
+          'Accept': 'application/json',
+          'Accept-Language': 'en-IN,en-GB;q=0.9,en;q=0.8,hi;q=0.7',
+          'Referer': 'https://www.myntra.com/',
+          'Origin': 'https://www.myntra.com',
+        },
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!res.ok) continue;
+      const data = await res.json();
+      const product = data.product || data.data || data;
+      if (!product) continue;
+
+      const name = product.name || product.title || '';
+      const brand = product.brand?.name || product.brandName || '';
+      const title = brand ? `${brand} ${name}` : name;
+      const currentPrice = product.price?.amount || product.sellingPrice || product.price || 0;
+      const originalPrice = product.price?.mrp || product.mrp || null;
+      const discountPercent = product.price?.discountPercent || product.discountPercent || null;
+      const imageUrl = product.searchImage || product.image || product.imageUrl || null;
+      const availability = product.inventoryInfo?.some(item => item.available) ?? true;
+
+      if (title && currentPrice > 0) {
+        return { title, currentPrice, originalPrice, currency: '₹', imageUrl, availability, discountPercent };
+      }
+    } catch {}
+  }
+  return null;
+}
+
 function extractMyxData(html) {
   const match = html.match(/window\.__myx\s*=\s*(\{.+?\})(?:\s*;)?\s*<\//s);
   if (!match) return null;
@@ -287,7 +349,11 @@ async function scrapeMyntraViaPuppeteer(url) {
 }
 
 async function scrapeMyntra(url) {
-  // Try Puppeteer first (more likely to succeed against anti-bot)
+  // Try API first (may bypass IP blocking)
+  const apiResult = await scrapeMyntraViaApi(url);
+  if (apiResult) return apiResult;
+
+  // Try Puppeteer next
   const puppeteerResult = await scrapeMyntraViaPuppeteer(url);
   if (puppeteerResult) return puppeteerResult;
 
@@ -298,6 +364,85 @@ async function scrapeMyntra(url) {
 // ============================================
 // FLIPKART
 // ============================================
+
+// Try Flipkart via direct fetch (may bypass some IP blocking)
+async function scrapeFlipkartViaFetch(url) {
+  const ua = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+  try {
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': ua,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'en-IN,en-US;q=0.9,en;q=0.8,hi;q=0.7',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1',
+        'Upgrade-Insecure-Requests': '1',
+      },
+      signal: AbortSignal.timeout(20000),
+      redirect: 'follow',
+    });
+    if (!res.ok) return null;
+    const html = await res.text();
+    if (html.length < 1000) return null;
+
+    // Try to extract ppd data from HTML
+    const ppdMatch = html.match(/"ppd"\s*:\s*(\{)/);
+    if (ppdMatch) {
+      const start = ppdMatch.index + ppdMatch[0].length - 1;
+      let depth = 1, i = start;
+      while (i < html.length - 1 && depth > 0) {
+        i++;
+        if (html[i] === '{') depth++;
+        if (html[i] === '}') depth--;
+      }
+      if (depth === 0) {
+        try {
+          const ppd = JSON.parse(html.substring(start, i + 1));
+          const price = ppd?.finalPrice ?? ppd?.fsp ?? ppd?.fkfp ?? null;
+          const mrp = ppd?.mrp ?? null;
+          if (price && price > 0) {
+            // Extract title from HTML
+            const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
+            const title = (titleMatch?.[1] || '').split(' - ')[0]?.trim() || 'Product';
+            return {
+              title,
+              currentPrice: price,
+              originalPrice: mrp > price ? mrp : null,
+              currency: '₹',
+              imageUrl: null,
+              availability: true,
+              discountPercent: mrp > price ? Math.round((1 - price / mrp) * 100) : null,
+            };
+          }
+        } catch {}
+      }
+    }
+
+    // Fallback: regex price extraction
+    const pm = html.match(/(?:₹|Rs\.?|INR)\s*([\d,]+(?:\.\d{1,2})?)/i);
+    if (pm) {
+      const p = parseFloat(pm[1].replace(/,/g, ''));
+      if (p > 10) {
+        const tm = html.match(/<title>([^<]+)<\/title>/i);
+        return {
+          title: (tm?.[1] || '').split(' - ')[0]?.trim() || 'Product',
+          currentPrice: p,
+          originalPrice: null,
+          currency: '₹',
+          imageUrl: null,
+          availability: true,
+          discountPercent: null,
+        };
+      }
+    }
+  } catch (e) {
+    console.error('Flipkart fetch error:', e.message);
+  }
+  return null;
+}
 
 function tryExtractFlipkartApiData(data) {
   try {
@@ -352,7 +497,21 @@ async function scrapeFlipkartViaPuppeteer(url) {
 
     // Navigate with domcontentloaded first, then wait for network
     console.log(`Navigating to: ${url}`);
-    const resp = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+
+    // Try with shorter timeout first
+    let resp;
+    try {
+      resp = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    } catch (e) {
+      console.log(`First navigation attempt failed: ${e.message}`);
+      // Try with even shorter timeout and load event
+      try {
+        resp = await page.goto(url, { waitUntil: 'load', timeout: 15000 });
+      } catch (e2) {
+        console.error(`All navigation attempts failed: ${e2.message}`);
+        return null;
+      }
+    }
 
     if (!resp) {
       console.error('No response from Flipkart');
@@ -381,7 +540,7 @@ async function scrapeFlipkartViaPuppeteer(url) {
 
     // Try to wait for product-specific elements
     try {
-      await page.waitForSelector('h1 span, [class*="price"], [class*="Price"], [data-testid="product-title"]', { timeout: 10000 });
+      await page.waitForSelector('h1 span, [class*="price"], [class*="Price"], [data-testid="product-title"]', { timeout: 8000 });
     } catch {
       console.log('Timeout waiting for product elements');
     }
@@ -559,7 +718,19 @@ app.post('/scrape', async (req, res) => {
 
   try {
     const isMyntra = store === 'myntra' || url.includes('myntra.com');
-    const result = isMyntra ? await scrapeMyntra(url) : await scrapeFlipkartViaPuppeteer(url);
+    let result;
+
+    if (isMyntra) {
+      result = await scrapeMyntra(url);
+    } else {
+      // Try fetch first for Flipkart (faster, may work)
+      result = await scrapeFlipkartViaFetch(url);
+      if (!result) {
+        // Fallback to Puppeteer
+        result = await scrapeFlipkartViaPuppeteer(url);
+      }
+    }
+
     if (result) return res.json({ success: true, data: result });
     res.json({ success: false, error: 'Could not extract product data' });
   } catch (err) {
