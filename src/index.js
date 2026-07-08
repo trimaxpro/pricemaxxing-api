@@ -171,7 +171,12 @@ function extractMyntraProductId(url) {
 // Try Myntra internal API (may bypass IP blocking)
 async function scrapeMyntraViaApi(url) {
   const productId = extractMyntraProductId(url);
-  if (!productId) return null;
+  if (!productId) {
+    console.log('Could not extract Myntra product ID from URL');
+    return null;
+  }
+
+  console.log(`Trying Myntra API for product ID: ${productId}`);
 
   const apiUrls = [
     `https://www.myntra.com/gateway/v2/product/${productId}`,
@@ -180,6 +185,7 @@ async function scrapeMyntraViaApi(url) {
 
   for (const apiUrl of apiUrls) {
     try {
+      console.log(`Trying API: ${apiUrl}`);
       const res = await fetch(apiUrl, {
         headers: {
           'User-Agent': UA,
@@ -190,10 +196,16 @@ async function scrapeMyntraViaApi(url) {
         },
         signal: AbortSignal.timeout(15000),
       });
+
+      console.log(`API response status: ${res.status}`);
+
       if (!res.ok) continue;
       const data = await res.json();
       const product = data.product || data.data || data;
-      if (!product) continue;
+      if (!product) {
+        console.log('No product data in API response');
+        continue;
+      }
 
       const name = product.name || product.title || '';
       const brand = product.brand?.name || product.brandName || '';
@@ -204,10 +216,14 @@ async function scrapeMyntraViaApi(url) {
       const imageUrl = product.searchImage || product.image || product.imageUrl || null;
       const availability = product.inventoryInfo?.some(item => item.available) ?? true;
 
+      console.log(`API extracted: ${title} - ₹${currentPrice}`);
+
       if (title && currentPrice > 0) {
         return { title, currentPrice, originalPrice, currency: '₹', imageUrl, availability, discountPercent };
       }
-    } catch {}
+    } catch (e) {
+      console.error(`API error for ${apiUrl}:`, e.message);
+    }
   }
   return null;
 }
