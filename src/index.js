@@ -59,22 +59,25 @@ function extractMyxData(html) {
 }
 
 async function scrapeMyntra(url) {
-  // Seed session with homepage visit for cookies
-  const cookieRes = await fetch('https://www.myntra.com/', {
-    headers: { 'User-Agent': UA, 'Accept': 'text/html', 'Referer': 'https://www.myntra.com/' },
-  });
-  const cookieHeader = (cookieRes.headers.getSetCookie?.() || []).map(c => c.split(';')[0]).join('; ');
+  let cookieHeader = '';
+  try {
+    const cookieRes = await fetch('https://www.myntra.com/', {
+      headers: { 'User-Agent': UA, 'Accept': 'text/html', 'Referer': 'https://www.myntra.com/' },
+      signal: AbortSignal.timeout(8000),
+    });
+    const setCookie = cookieRes.headers.get('set-cookie') || '';
+    cookieHeader = setCookie.split(',').map(c => c.split(';')[0]).join('; ');
+  } catch {}
 
-  // Fetch product page with session cookies
   const res = await fetch(url, {
     headers: {
       'User-Agent': UA,
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       'Accept-Language': 'en-IN,en;q=0.9,hi;q=0.8',
       'Referer': 'https://www.myntra.com/',
-      'Cookie': cookieHeader,
+      ...(cookieHeader ? { 'Cookie': cookieHeader } : {}),
     },
-    signal: AbortSignal.timeout(20000),
+    signal: AbortSignal.timeout(25000),
   });
   if (!res.ok) return null;
 
@@ -222,9 +225,9 @@ app.post('/debug', async (req, res) => {
 
   const isMyntra = url.includes('myntra.com');
   if (isMyntra) {
-    const cookieRes = await fetch('https://www.myntra.com/', { headers: { 'User-Agent': UA } });
-    const c = (cookieRes.headers.getSetCookie?.() || []).map(c => c.split(';')[0]).join('; ');
-    const r = await fetch(url, { headers: { 'User-Agent': UA, 'Accept': 'text/html', 'Cookie': c }, signal: AbortSignal.timeout(20000) });
+    let c = '';
+    try { const cr = await fetch('https://www.myntra.com/', { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(8000) }); c = (cr.headers.get('set-cookie') || '').split(',').map(c => c.split(';')[0]).join('; '); } catch {}
+    const r = await fetch(url, { headers: { 'User-Agent': UA, 'Accept': 'text/html', ...(c ? { 'Cookie': c } : {}) }, signal: AbortSignal.timeout(25000) });
     const html = await r.text();
     const hasMyx = html.includes('window.__myx');
     const match = html.match(/window\.__myx\s*=\s*(\{.+?\});/s);
