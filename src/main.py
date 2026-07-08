@@ -61,17 +61,12 @@ def extract_flipkart_image(html: str) -> str | None:
             logger.info(f"Flipkart image from imageURL: {url[:80]}")
             return url
 
-    # Try og:image meta tag
-    match = re.search(r'content="(https?://[^"]*rukmini[^"]*)"', html, re.I)
+    # Try rukmini URL directly in HTML (not unicode escaped)
+    match = re.search(r'(https?://rukminim[12]\.flixcart\.com/image/[^"<>\s]+)', html)
     if match:
-        logger.info(f"Flipkart image from og:image: {match.group(1)[:80]}")
-        return match.group(1)
-
-    # Try any rukmini URL in HTML
-    match = re.search(r'(https?:\\u002f\\u002frukmini[^\s"<>]+)', html)
-    if match:
-        url = match.group(1).replace("\\u002f", "/")
-        url = url.replace("{@width}", "1920").replace("{@height}", "1920").replace("{@quality}", "90")
+        url = match.group(1)
+        if "?" not in url:
+            url += "?q=90"
         logger.info(f"Flipkart image from rukmini: {url[:80]}")
         return url
 
